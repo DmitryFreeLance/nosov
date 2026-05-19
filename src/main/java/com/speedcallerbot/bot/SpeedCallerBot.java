@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.GetFile;
+import org.telegram.telegrambots.meta.api.methods.send.SendContact;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
@@ -105,6 +106,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         if (message.hasText() && message.getText().startsWith("/start")) {
             state.setMode(UserMode.NONE);
             db.saveUserState(state);
+            clearDialContactMessage(chatId, state);
             showMainMenu(chatId, state, null);
             safeDeleteMessage(chatId, message.getMessageId());
             return;
@@ -112,10 +114,12 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
 
         if (message.hasText() && message.getText().startsWith("/admin")) {
             if (!db.isAdmin(userId)) {
+                clearDialContactMessage(chatId, state);
                 showAccessDenied(chatId, state, null);
             } else {
                 state.setMode(UserMode.NONE);
                 db.saveUserState(state);
+                clearDialContactMessage(chatId, state);
                 showAdminMenu(chatId, state, null, null);
             }
             safeDeleteMessage(chatId, message.getMessageId());
@@ -123,18 +127,21 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         }
 
         if (message.hasDocument()) {
+            clearDialContactMessage(chatId, state);
             processDocumentUpload(chatId, state, message);
             safeDeleteMessage(chatId, message.getMessageId());
             return;
         }
 
         if (state.getMode() == UserMode.WAITING_TEXT && message.hasText()) {
+            clearDialContactMessage(chatId, state);
             processPastedText(chatId, state, message.getText());
             safeDeleteMessage(chatId, message.getMessageId());
             return;
         }
 
         if (state.getMode() == UserMode.WAITING_ADMIN_ID && message.hasText()) {
+            clearDialContactMessage(chatId, state);
             processAdminGrant(chatId, state, message.getText());
             safeDeleteMessage(chatId, message.getMessageId());
             return;
@@ -151,6 +158,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 + "• <b>LOAD NUMBERS</b> to upload a file or paste contacts\n"
                 + "• <b>START</b> to begin calling\n"
                 + "\nEverything is handled inline to keep your chat clean.";
+            clearDialContactMessage(chatId, state);
             showMainMenu(chatId, state, helperText);
             safeDeleteMessage(chatId, message.getMessageId());
         }
@@ -182,37 +190,48 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             case BotCallbacks.START_CALLING -> {
                 state.setMode(UserMode.NONE);
                 db.saveUserState(state);
+                clearDialContactMessage(chatId, state);
                 showCallCard(chatId, state, callbackMessageId, null);
             }
             case BotCallbacks.OPEN_LOAD_MENU -> {
                 state.setMode(UserMode.NONE);
                 db.saveUserState(state);
+                clearDialContactMessage(chatId, state);
                 showLoadMenu(chatId, state, callbackMessageId, null);
             }
             case BotCallbacks.OPEN_MAIN_MENU -> {
                 state.setMode(UserMode.NONE);
                 db.saveUserState(state);
+                clearDialContactMessage(chatId, state);
                 showMainMenu(chatId, state, null);
             }
             case BotCallbacks.CALL_NOW -> {
                 Optional<ContactRecord> currentContact = db.getContactByIndex(state.getUserId(), state.getCurrentIndex());
-                String status = currentContact
-                    .map(contact -> "📞 <b>Dial this number:</b> " + TextFormatter.esc(contact.getPhone()) + "\n"
-                        + "Tap the number in the card body to open your phone dialer.")
-                    .orElse("⚠️ Contact is no longer available.");
+                String status;
+                if (currentContact.isPresent()) {
+                    boolean sent = sendDialContact(chatId, state, currentContact.get());
+                    status = sent
+                        ? "✅ Contact card sent. Tap <b>Call</b> in the contact card to dial immediately."
+                        : "⚠️ Could not send contact card. Tap the phone number in this message.";
+                } else {
+                    status = "⚠️ Contact is no longer available.";
+                }
                 showCallCard(chatId, state, callbackMessageId, status, true);
             }
             case BotCallbacks.CALL_SKIP -> {
+                clearDialContactMessage(chatId, state);
                 shiftIndex(state, +1);
                 showCallCard(chatId, state, callbackMessageId, null);
             }
             case BotCallbacks.CALL_BACK -> {
+                clearDialContactMessage(chatId, state);
                 shiftIndex(state, -1);
                 showCallCard(chatId, state, callbackMessageId, null);
             }
             case BotCallbacks.LOAD_FILE -> {
                 state.setMode(UserMode.WAITING_FILE);
                 db.saveUserState(state);
+                clearDialContactMessage(chatId, state);
                 showLoadMenu(chatId, state, callbackMessageId,
                     "📤 Send a <b>.xlsx</b>, <b>.txt</b> or <b>.csv</b> file in the next message.\n"
                         + "I will import numbers and remove duplicates automatically.");
@@ -220,17 +239,20 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             case BotCallbacks.LOAD_TEXT -> {
                 state.setMode(UserMode.WAITING_TEXT);
                 db.saveUserState(state);
+                clearDialContactMessage(chatId, state);
                 showLoadMenu(chatId, state, callbackMessageId,
                     "📝 Paste your phone list in the next message.\n"
                         + "Supported formats: one number per line, or <code>Name, +1234567890</code>.");
             }
             case BotCallbacks.REMOVE_DUPLICATES -> {
+                clearDialContactMessage(chatId, state);
                 int removed = db.removeDuplicates(userId);
                 clampIndex(state);
                 showLoadMenu(chatId, state, callbackMessageId,
                     "♻️ Duplicate cleanup complete. Removed: <b>" + removed + "</b>.");
             }
             case BotCallbacks.CLEAR_ALL -> {
+                clearDialContactMessage(chatId, state);
                 int removed = db.clearContacts(userId);
                 state.setCurrentIndex(0);
                 state.setMode(UserMode.NONE);
@@ -239,6 +261,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                     "🧹 Database cleared. Deleted <b>" + removed + "</b> entries.");
             }
             case BotCallbacks.OPEN_ADMIN_MENU -> {
+                clearDialContactMessage(chatId, state);
                 if (!db.isAdmin(userId)) {
                     showAccessDenied(chatId, state, callbackMessageId);
                 } else {
@@ -248,6 +271,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 }
             }
             case BotCallbacks.ADMIN_USERS -> {
+                clearDialContactMessage(chatId, state);
                 if (!db.isAdmin(userId)) {
                     showAccessDenied(chatId, state, callbackMessageId);
                 } else {
@@ -255,6 +279,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 }
             }
             case BotCallbacks.ADMIN_ADD -> {
+                clearDialContactMessage(chatId, state);
                 if (!db.isAdmin(userId)) {
                     showAccessDenied(chatId, state, callbackMessageId);
                 } else {
@@ -265,13 +290,17 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 }
             }
             case BotCallbacks.ADMIN_EXPORT -> {
+                clearDialContactMessage(chatId, state);
                 if (!db.isAdmin(userId)) {
                     showAccessDenied(chatId, state, callbackMessageId);
                 } else {
                     exportMergedNumbers(chatId, state, callbackMessageId);
                 }
             }
-            default -> showMainMenu(chatId, state, null);
+            default -> {
+                clearDialContactMessage(chatId, state);
+                showMainMenu(chatId, state, null);
+            }
         }
     }
 
@@ -519,7 +548,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             .append("/")
             .append(total)
             .append("\n\n")
-            .append("Press <b>CALL</b> to refresh this card and highlight the dialing number.");
+            .append("Press <b>CALL</b> to send a contact card for one-tap dialing.");
 
         if (statusMessage != null && !statusMessage.isBlank()) {
             text.append("\n\n").append(statusMessage);
@@ -709,6 +738,41 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             + "• Added: <b>" + report.getAdded() + "</b>\n"
             + "• Duplicates skipped: <b>" + report.getDuplicates() + "</b>\n"
             + "• Invalid rows: <b>" + report.getInvalid() + "</b>";
+    }
+
+    private boolean sendDialContact(long chatId, UserState state, ContactRecord contact) {
+        clearDialContactMessage(chatId, state);
+
+        SendContact sendContact = new SendContact();
+        sendContact.setChatId(Long.toString(chatId));
+        sendContact.setPhoneNumber(contact.getPhone());
+        sendContact.setFirstName(buildContactFirstName(contact.getDisplayName()));
+
+        try {
+            Message sent = execute(sendContact);
+            state.setLastCallContactMessageId(sent.getMessageId());
+            db.saveUserState(state);
+            return true;
+        } catch (TelegramApiException e) {
+            log.error("Failed to send dial contact", e);
+            return false;
+        }
+    }
+
+    private void clearDialContactMessage(long chatId, UserState state) {
+        if (state == null || state.getLastCallContactMessageId() == null) {
+            return;
+        }
+        safeDeleteMessage(chatId, state.getLastCallContactMessageId());
+        state.setLastCallContactMessageId(null);
+        db.saveUserState(state);
+    }
+
+    private String buildContactFirstName(String displayName) {
+        String name = (displayName == null || displayName.isBlank() || "No Name".equalsIgnoreCase(displayName.trim()))
+            ? "Client"
+            : displayName.trim();
+        return name.length() > 64 ? name.substring(0, 64) : name;
     }
 
     private void registerUser(org.telegram.telegrambots.meta.api.objects.User user) {

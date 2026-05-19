@@ -55,6 +55,7 @@ public class DatabaseService {
                     tg_id INTEGER PRIMARY KEY,
                     current_index INTEGER NOT NULL DEFAULT 0,
                     last_bot_message_id INTEGER,
+                    last_call_contact_message_id INTEGER,
                     mode TEXT NOT NULL DEFAULT 'NONE',
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (tg_id) REFERENCES users(tg_id) ON DELETE CASCADE
@@ -74,6 +75,8 @@ public class DatabaseService {
 
             stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_unique ON contacts(tg_id, phone)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_contacts_tg_id ON contacts(tg_id)");
+
+            ensureColumnExists(connection, "user_state", "last_call_contact_message_id INTEGER");
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to initialize database schema", e);
         }
@@ -123,7 +126,7 @@ public class DatabaseService {
     }
 
     public UserState getUserState(long tgId) {
-        String sql = "SELECT tg_id, current_index, last_bot_message_id, mode FROM user_state WHERE tg_id = ?";
+        String sql = "SELECT tg_id, current_index, last_bot_message_id, last_call_contact_message_id, mode FROM user_state WHERE tg_id = ?";
         try (Connection connection = openConnection();
              PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setLong(1, tgId);
@@ -138,10 +141,13 @@ public class DatabaseService {
                     }
                     int rawMessageId = rs.getInt("last_bot_message_id");
                     Integer messageId = rs.wasNull() ? null : rawMessageId;
+                    int rawCallContactMessageId = rs.getInt("last_call_contact_message_id");
+                    Integer callContactMessageId = rs.wasNull() ? null : rawCallContactMessageId;
                     return new UserState(
                         rs.getLong("tg_id"),
                         rs.getInt("current_index"),
                         messageId,
+                        callContactMessageId,
                         mode
                     );
                 }
@@ -150,18 +156,19 @@ public class DatabaseService {
             throw new IllegalStateException("Failed to fetch user state", e);
         }
 
-        UserState fallback = new UserState(tgId, 0, null, UserMode.NONE);
+        UserState fallback = new UserState(tgId, 0, null, null, UserMode.NONE);
         saveUserState(fallback);
         return fallback;
     }
 
     public void saveUserState(UserState state) {
         String sql = """
-            INSERT INTO user_state (tg_id, current_index, last_bot_message_id, mode, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO user_state (tg_id, current_index, last_bot_message_id, last_call_contact_message_id, mode, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(tg_id) DO UPDATE SET
                 current_index = excluded.current_index,
                 last_bot_message_id = excluded.last_bot_message_id,
+                last_call_contact_message_id = excluded.last_call_contact_message_id,
                 mode = excluded.mode,
                 updated_at = CURRENT_TIMESTAMP
             """;
@@ -175,7 +182,12 @@ public class DatabaseService {
             } else {
                 ps.setInt(3, state.getLastBotMessageId());
             }
-            ps.setString(4, state.getMode().name());
+            if (state.getLastCallContactMessageId() == null) {
+                ps.setNull(4, java.sql.Types.INTEGER);
+            } else {
+                ps.setInt(4, state.getLastCallContactMessageId());
+            }
+            ps.setString(5, state.getMode().name());
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to save user state", e);
@@ -402,5 +414,17 @@ public class DatabaseService {
             st.execute("PRAGMA foreign_keys = ON");
         }
         return connection;
+    }
+
+    private void ensureColumnExists(Connection connection, String tableName, String columnDefinition) throws SQLException {
+        String sql = "ALTER TABLE " + tableName + " ADD COLUMN " + columnDefinition;
+        try (Statement st = connection.createStatement()) {
+            st.execute(sql);
+        } catch (SQLException e) {
+            String message = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+            if (!message.contains("duplicate column name")) {
+                throw e;
+            }
+        }
     }
 }
