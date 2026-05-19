@@ -197,10 +197,10 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             case BotCallbacks.CALL_NOW -> {
                 Optional<ContactRecord> currentContact = db.getContactByIndex(state.getUserId(), state.getCurrentIndex());
                 String status = currentContact
-                    .map(contact -> "📞 <b>Dial this number:</b> <code>" + TextFormatter.esc(contact.getPhone()) + "</code>\n"
-                        + "On most devices, this number is tappable in the message body.")
+                    .map(contact -> "📞 <b>Dial this number:</b> " + TextFormatter.esc(contact.getPhone()) + "\n"
+                        + "Tap the number in the card body to open your phone dialer.")
                     .orElse("⚠️ Contact is no longer available.");
-                showCallCard(chatId, state, callbackMessageId, status);
+                showCallCard(chatId, state, callbackMessageId, status, true);
             }
             case BotCallbacks.CALL_SKIP -> {
                 shiftIndex(state, +1);
@@ -304,7 +304,9 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             state.setMode(UserMode.NONE);
             db.saveUserState(state);
 
-            showLoadMenu(chatId, state, null, buildImportSummary("✅ File imported successfully.", report));
+            String summary = buildImportSummary("✅ File imported successfully.", report)
+                + "\n\n<b>You can now press \"CALL\" to begin calling.</b>";
+            showLoadMenu(chatId, state, null, summary);
         } catch (IllegalArgumentException e) {
             showLoadMenu(chatId, state, null,
                 "⚠️ " + TextFormatter.esc(e.getMessage()));
@@ -331,7 +333,9 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         state.setMode(UserMode.NONE);
         db.saveUserState(state);
 
-        showLoadMenu(chatId, state, null, buildImportSummary("✅ Text list imported.", report));
+        String summary = buildImportSummary("✅ Text list imported.", report)
+            + "\n\n<b>You can now press \"CALL\" to begin calling.</b>";
+        showLoadMenu(chatId, state, null, summary);
     }
 
     private void processAdminGrant(long chatId, UserState state, String rawId) {
@@ -458,6 +462,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         InlineKeyboardMarkup markup = keyboard(
             callbackButton("📤 LOAD FILE", BotCallbacks.LOAD_FILE),
             callbackButton("📝 PASTE TEXT LIST", BotCallbacks.LOAD_TEXT),
+            callbackButton("📇 OPEN CONTACT CARDS", BotCallbacks.START_CALLING),
             callbackButton("♻️ REMOVE DUPLICATES", BotCallbacks.REMOVE_DUPLICATES),
             callbackButton("🧹 CLEAR ALL", BotCallbacks.CLEAR_ALL),
             callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)
@@ -467,6 +472,10 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
     }
 
     private void showCallCard(long chatId, UserState state, Integer preferredMessageId, String statusMessage) {
+        showCallCard(chatId, state, preferredMessageId, statusMessage, false);
+    }
+
+    private void showCallCard(long chatId, UserState state, Integer preferredMessageId, String statusMessage, boolean forceReplace) {
         int total = db.countContacts(state.getUserId());
         if (total <= 0) {
             String text = "📭 <b>No numbers yet</b>\n\n"
@@ -478,7 +487,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)
             );
 
-            renderScreen(chatId, state, preferredMessageId, text, markup);
+            renderScreen(chatId, state, preferredMessageId, text, markup, forceReplace);
             return;
         }
 
@@ -501,28 +510,28 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         text.append("👤 <b>Client:</b> ")
             .append(TextFormatter.esc(contact.getDisplayName()))
             .append("\n\n")
-            .append("📞 <b>Tel:</b> <code>")
+            .append("📞 <b>Tel:</b> ")
             .append(TextFormatter.esc(contact.getPhone()))
-            .append("</code>\n\n")
+            .append("\n")
+            .append("Tap the number above to open your dialer on mobile.\n\n")
             .append("📊 <b>Progress:</b> ")
             .append(currentPosition)
             .append("/")
             .append(total)
             .append("\n\n")
-            .append("Tap <b>CALL</b> to open your dialer instantly.");
+            .append("Press <b>CALL</b> to refresh this card and highlight the dialing number.");
 
         if (statusMessage != null && !statusMessage.isBlank()) {
             text.append("\n\n").append(statusMessage);
         }
 
-        InlineKeyboardMarkup markup = keyboard(
-            callbackButton("📞 CALL", BotCallbacks.CALL_NOW),
-            callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP),
-            callbackButton("⏮ BACK", BotCallbacks.CALL_BACK),
-            callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)
+        InlineKeyboardMarkup markup = keyboardRows(
+            new Button[]{callbackButton("📞 CALL", BotCallbacks.CALL_NOW)},
+            new Button[]{callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP), callbackButton("⏮ BACK", BotCallbacks.CALL_BACK)},
+            new Button[]{callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)}
         );
 
-        renderScreen(chatId, state, preferredMessageId, text.toString(), markup);
+        renderScreen(chatId, state, preferredMessageId, text.toString(), markup, forceReplace);
     }
 
     private void showAdminMenu(long chatId, UserState state, Integer preferredMessageId, String statusMessage) {
@@ -612,7 +621,23 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                               Integer preferredMessageId,
                               String text,
                               InlineKeyboardMarkup markup) {
+        renderScreen(chatId, state, preferredMessageId, text, markup, false);
+    }
+
+    private void renderScreen(long chatId,
+                              UserState state,
+                              Integer preferredMessageId,
+                              String text,
+                              InlineKeyboardMarkup markup,
+                              boolean forceReplace) {
         Integer targetMessageId = preferredMessageId != null ? preferredMessageId : state.getLastBotMessageId();
+
+        if (forceReplace && targetMessageId != null) {
+            safeDeleteMessage(chatId, targetMessageId);
+            targetMessageId = null;
+            state.setLastBotMessageId(null);
+            db.saveUserState(state);
+        }
 
         if (targetMessageId != null) {
             EditMessageText editMessage = new EditMessageText();
@@ -708,23 +733,53 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             if (button == null) {
                 continue;
             }
-
-            InlineKeyboardButton tgButton = new InlineKeyboardButton();
-            tgButton.setText(button.text());
-            if (button.url() != null) {
-                tgButton.setUrl(button.url());
-            } else {
-                tgButton.setCallbackData(button.callbackData());
-            }
-
-            List<InlineKeyboardButton> row = new ArrayList<>();
-            row.add(tgButton);
-            rows.add(row);
+            rows.add(buildButtonRow(button));
         }
 
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         markup.setKeyboard(rows);
         return markup;
+    }
+
+    private InlineKeyboardMarkup keyboardRows(Button[]... rowsButtons) {
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        for (Button[] rowButtons : rowsButtons) {
+            if (rowButtons == null || rowButtons.length == 0) {
+                continue;
+            }
+
+            List<InlineKeyboardButton> row = new ArrayList<>();
+            for (Button button : rowButtons) {
+                if (button == null) {
+                    continue;
+                }
+                row.add(buildInlineButton(button));
+            }
+            if (!row.isEmpty()) {
+                rows.add(row);
+            }
+        }
+
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    private List<InlineKeyboardButton> buildButtonRow(Button button) {
+        List<InlineKeyboardButton> row = new ArrayList<>();
+        row.add(buildInlineButton(button));
+        return row;
+    }
+
+    private InlineKeyboardButton buildInlineButton(Button button) {
+        InlineKeyboardButton tgButton = new InlineKeyboardButton();
+        tgButton.setText(button.text());
+        if (button.url() != null) {
+            tgButton.setUrl(button.url());
+        } else {
+            tgButton.setCallbackData(button.callbackData());
+        }
+        return tgButton;
     }
 
     private Button callbackButton(String text, String callbackData) {
