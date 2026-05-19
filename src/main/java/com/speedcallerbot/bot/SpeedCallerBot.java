@@ -194,6 +194,14 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 db.saveUserState(state);
                 showMainMenu(chatId, state, null);
             }
+            case BotCallbacks.CALL_NOW -> {
+                Optional<ContactRecord> currentContact = db.getContactByIndex(state.getUserId(), state.getCurrentIndex());
+                String status = currentContact
+                    .map(contact -> "📞 <b>Dial this number:</b> <code>" + TextFormatter.esc(contact.getPhone()) + "</code>\n"
+                        + "On most devices, this number is tappable in the message body.")
+                    .orElse("⚠️ Contact is no longer available.");
+                showCallCard(chatId, state, callbackMessageId, status);
+            }
             case BotCallbacks.CALL_SKIP -> {
                 shiftIndex(state, +1);
                 showCallCard(chatId, state, callbackMessageId, null);
@@ -508,7 +516,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         }
 
         InlineKeyboardMarkup markup = keyboard(
-            urlButton("📞 CALL", "tel:" + contact.getPhone()),
+            callbackButton("📞 CALL", BotCallbacks.CALL_NOW),
             callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP),
             callbackButton("⏮ BACK", BotCallbacks.CALL_BACK),
             callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)

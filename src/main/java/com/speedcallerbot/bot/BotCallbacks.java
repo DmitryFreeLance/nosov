@@ -8,6 +8,7 @@ public final class BotCallbacks {
     public static final String OPEN_LOAD_MENU = "OPEN_LOAD_MENU";
     public static final String OPEN_MAIN_MENU = "OPEN_MAIN_MENU";
 
+    public static final String CALL_NOW = "CALL_NOW";
     public static final String CALL_SKIP = "CALL_SKIP";
     public static final String CALL_BACK = "CALL_BACK";
 
