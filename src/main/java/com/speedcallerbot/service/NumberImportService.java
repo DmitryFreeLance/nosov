@@ -173,7 +173,7 @@ public class NumberImportService {
         }
 
         if (name == null || name.isBlank()) {
-            name = "No Name";
+            name = "Client";
         }
 
         return new ParsedContact(name, phone);
@@ -233,7 +233,7 @@ public class NumberImportService {
 
         if (name == null || name.isBlank()) {
             String fromLine = line.replace(rawPhone, "").replaceAll("^[\\s:;,.|\\-]+|[\\s:;,.|\\-]+$", "").trim();
-            name = fromLine.isBlank() ? "No Name" : fromLine;
+            name = fromLine.isBlank() ? "Client" : fromLine;
         }
 
         return new ParsedContact(name, phone);

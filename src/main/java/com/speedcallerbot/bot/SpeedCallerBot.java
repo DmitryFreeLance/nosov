@@ -219,11 +219,18 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 showCallCard(chatId, state, callbackMessageId, status, true);
             }
             case BotCallbacks.CALL_SKIP -> {
+                int totalContacts = db.countContacts(state.getUserId());
+                if (totalContacts <= 0 || state.getCurrentIndex() >= totalContacts - 1) {
+                    break;
+                }
                 clearDialContactMessage(chatId, state);
                 shiftIndex(state, +1);
                 showCallCard(chatId, state, callbackMessageId, null);
             }
             case BotCallbacks.CALL_BACK -> {
+                if (state.getCurrentIndex() <= 0) {
+                    break;
+                }
                 clearDialContactMessage(chatId, state);
                 shiftIndex(state, -1);
                 showCallCard(chatId, state, callbackMessageId, null);
@@ -334,7 +341,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             db.saveUserState(state);
 
             String summary = buildImportSummary("✅ File imported successfully.", report)
-                + "\n\n<b>You can now press \"CALL\" to begin calling.</b>";
+                + "\n\n<b>You can now press \"SEND CONTACT\" to begin calling.</b>";
             showLoadMenu(chatId, state, null, summary);
         } catch (IllegalArgumentException e) {
             showLoadMenu(chatId, state, null,
@@ -363,7 +370,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         db.saveUserState(state);
 
         String summary = buildImportSummary("✅ Text list imported.", report)
-            + "\n\n<b>You can now press \"CALL\" to begin calling.</b>";
+            + "\n\n<b>You can now press \"SEND CONTACT\" to begin calling.</b>";
         showLoadMenu(chatId, state, null, summary);
     }
 
@@ -542,21 +549,21 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             .append("📞 <b>Tel:</b> ")
             .append(TextFormatter.esc(contact.getPhone()))
             .append("\n")
-            .append("Tap the number above to open your dialer on mobile.\n\n")
+            .append("Tip: tap the number above to open your dialer or save it to phone contacts.\n\n")
             .append("📊 <b>Progress:</b> ")
             .append(currentPosition)
             .append("/")
             .append(total)
             .append("\n\n")
-            .append("Press <b>CALL</b> to send a contact card for one-tap dialing.");
+            .append("Press <b>SEND CONTACT</b> to get a one-tap call card.");
 
         if (statusMessage != null && !statusMessage.isBlank()) {
             text.append("\n\n").append(statusMessage);
         }
 
         InlineKeyboardMarkup markup = keyboardRows(
-            new Button[]{callbackButton("📞 CALL", BotCallbacks.CALL_NOW)},
-            new Button[]{callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP), callbackButton("⏮ BACK", BotCallbacks.CALL_BACK)},
+            new Button[]{callbackButton("📇 SEND CONTACT", BotCallbacks.CALL_NOW)},
+            new Button[]{callbackButton("⏮ BACK", BotCallbacks.CALL_BACK), callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP)},
             new Button[]{callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)}
         );
 
@@ -769,9 +776,10 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
     }
 
     private String buildContactFirstName(String displayName) {
-        String name = (displayName == null || displayName.isBlank() || "No Name".equalsIgnoreCase(displayName.trim()))
+        String normalized = displayName == null ? "" : displayName.trim();
+        String name = (normalized.isBlank() || "No Name".equalsIgnoreCase(normalized) || "Client".equalsIgnoreCase(normalized))
             ? "Client"
-            : displayName.trim();
+            : normalized;
         return name.length() > 64 ? name.substring(0, 64) : name;
     }
 

@@ -28,6 +28,6 @@ public final class TextFormatter {
         String first = firstName == null ? "" : firstName.trim();
         String last = lastName == null ? "" : lastName.trim();
         String full = (first + " " + last).trim();
-        return full.isEmpty() ? "No Name" : full;
+        return full.isEmpty() ? "Client" : full;
     }
 }

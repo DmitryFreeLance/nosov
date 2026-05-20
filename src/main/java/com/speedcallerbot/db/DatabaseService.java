@@ -66,7 +66,7 @@ public class DatabaseService {
                 CREATE TABLE IF NOT EXISTS contacts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     tg_id INTEGER NOT NULL,
-                    display_name TEXT NOT NULL DEFAULT 'No Name',
+                    display_name TEXT NOT NULL DEFAULT 'Client',
                     phone TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (tg_id) REFERENCES users(tg_id) ON DELETE CASCADE
@@ -77,6 +77,7 @@ public class DatabaseService {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_contacts_tg_id ON contacts(tg_id)");
 
             ensureColumnExists(connection, "user_state", "last_call_contact_message_id INTEGER");
+            stmt.executeUpdate("UPDATE contacts SET display_name = 'Client' WHERE display_name IS NULL OR TRIM(display_name) = '' OR LOWER(TRIM(display_name)) = 'no name'");
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to initialize database schema", e);
         }
@@ -402,10 +403,13 @@ public class DatabaseService {
 
     private String normalizeName(String raw) {
         if (raw == null || raw.isBlank()) {
-            return "No Name";
+            return "Client";
         }
         String clean = raw.trim();
-        return clean.isEmpty() ? "No Name" : clean;
+        if (clean.isEmpty() || "No Name".equalsIgnoreCase(clean)) {
+            return "Client";
+        }
+        return clean;
     }
 
     private Connection openConnection() throws SQLException {
