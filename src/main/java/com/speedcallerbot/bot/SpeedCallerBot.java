@@ -541,11 +541,18 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
 
         ContactRecord contact = optionalContact.get();
         int currentPosition = state.getCurrentIndex() + 1;
+        String displayName = contact.getDisplayName() == null ? "" : contact.getDisplayName().trim();
+        boolean genericClientName = displayName.isBlank() || "Client".equalsIgnoreCase(displayName);
 
         StringBuilder text = new StringBuilder();
-        text.append("👤 <b>Client:</b> ")
-            .append(TextFormatter.esc(contact.getDisplayName()))
-            .append("\n\n")
+        if (genericClientName) {
+            text.append("👤 <b>Client</b>\n\n");
+        } else {
+            text.append("👤 <b>Client:</b> ")
+                .append(TextFormatter.esc(displayName))
+                .append("\n\n");
+        }
+        text
             .append("📞 <b>Tel:</b> ")
             .append(TextFormatter.esc(contact.getPhone()))
             .append("\n")
