@@ -5,9 +5,11 @@ import com.speedcallerbot.db.DatabaseService;
 import com.speedcallerbot.model.ContactRecord;
 import com.speedcallerbot.model.ImportReport;
 import com.speedcallerbot.model.ParsedBatch;
+import com.speedcallerbot.model.AdsgramAd;
 import com.speedcallerbot.model.UserMode;
 import com.speedcallerbot.model.UserState;
 import com.speedcallerbot.model.UserSummary;
+import com.speedcallerbot.service.AdsgramService;
 import com.speedcallerbot.service.NumberImportService;
 import com.speedcallerbot.util.TextFormatter;
 import org.slf4j.Logger;
@@ -50,6 +52,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
     private final BotConfig config;
     private final DatabaseService db;
     private final NumberImportService importService;
+    private final AdsgramService adsgramService;
     private final ConcurrentMap<Long, ReentrantLock> userLocks = new ConcurrentHashMap<>();
 
     public SpeedCallerBot(BotConfig config, DatabaseService db) {
@@ -57,6 +60,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         this.config = config;
         this.db = db;
         this.importService = new NumberImportService();
+        this.adsgramService = new AdsgramService(config);
     }
 
     @Override
@@ -219,21 +223,10 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 showCallCard(chatId, state, callbackMessageId, status, true);
             }
             case BotCallbacks.CALL_SKIP -> {
-                int totalContacts = db.countContacts(state.getUserId());
-                if (totalContacts <= 0 || state.getCurrentIndex() >= totalContacts - 1) {
-                    break;
-                }
-                clearDialContactMessage(chatId, state);
-                shiftIndex(state, +1);
-                showCallCard(chatId, state, callbackMessageId, null);
+                handleCallSkip(chatId, state, callbackMessageId);
             }
             case BotCallbacks.CALL_BACK -> {
-                if (state.getCurrentIndex() <= 0) {
-                    break;
-                }
-                clearDialContactMessage(chatId, state);
-                shiftIndex(state, -1);
-                showCallCard(chatId, state, callbackMessageId, null);
+                handleCallBack(chatId, state, callbackMessageId);
             }
             case BotCallbacks.LOAD_FILE -> {
                 state.setMode(UserMode.WAITING_FILE);
@@ -262,6 +255,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                 clearDialContactMessage(chatId, state);
                 int removed = db.clearContacts(userId);
                 state.setCurrentIndex(0);
+                state.setPendingAdContactIndex(null);
                 state.setMode(UserMode.NONE);
                 db.saveUserState(state);
                 showLoadMenu(chatId, state, callbackMessageId,
@@ -337,6 +331,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
 
             ImportReport report = db.addContacts(state.getUserId(), parsed.getContacts(), parsed.getInvalidCount());
             clampIndex(state);
+            state.setPendingAdContactIndex(null);
             state.setMode(UserMode.NONE);
             db.saveUserState(state);
 
@@ -366,6 +361,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         ImportReport report = db.addContacts(state.getUserId(), parsed.getContacts(), parsed.getInvalidCount());
 
         clampIndex(state);
+        state.setPendingAdContactIndex(null);
         state.setMode(UserMode.NONE);
         db.saveUserState(state);
 
@@ -514,6 +510,10 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
     private void showCallCard(long chatId, UserState state, Integer preferredMessageId, String statusMessage, boolean forceReplace) {
         int total = db.countContacts(state.getUserId());
         if (total <= 0) {
+            if (state.getPendingAdContactIndex() != null) {
+                state.setPendingAdContactIndex(null);
+                db.saveUserState(state);
+            }
             String text = "📭 <b>No numbers yet</b>\n\n"
                 + "Load your first database to start calling.\n"
                 + "You can upload <b>.xlsx</b> or send a text list.";
@@ -528,6 +528,17 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         }
 
         clampIndex(state);
+        Integer pendingAdContactIndex = state.getPendingAdContactIndex();
+        if (pendingAdContactIndex != null) {
+            if (!adsgramService.isEnabled() || pendingAdContactIndex < 0 || pendingAdContactIndex >= total) {
+                state.setPendingAdContactIndex(null);
+                db.saveUserState(state);
+            } else {
+                showAdsCard(chatId, state, preferredMessageId, total, forceReplace);
+                return;
+            }
+        }
+
         Optional<ContactRecord> optionalContact = db.getContactByIndex(state.getUserId(), state.getCurrentIndex());
         if (optionalContact.isEmpty()) {
             state.setCurrentIndex(0);
@@ -575,6 +586,49 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         );
 
         renderScreen(chatId, state, preferredMessageId, text.toString(), markup, forceReplace);
+    }
+
+    private void showAdsCard(long chatId,
+                             UserState state,
+                             Integer preferredMessageId,
+                             int totalContacts,
+                             boolean forceReplace) {
+        Optional<AdsgramAd> maybeAd = adsgramService.pickBestAd(state.getUserId());
+        if (maybeAd.isEmpty()) {
+            state.setPendingAdContactIndex(null);
+            db.saveUserState(state);
+            showCallCard(chatId, state, preferredMessageId, null, forceReplace);
+            return;
+        }
+
+        AdsgramAd ad = maybeAd.get();
+        int pendingIndex = Math.max(0, state.getPendingAdContactIndex() == null ? 0 : state.getPendingAdContactIndex());
+
+        StringBuilder text = new StringBuilder();
+        text.append("📣 <b>Sponsored</b>\n\n")
+            .append(ad.getTextHtml())
+            .append("\n\n")
+            .append("You can skip this offer at any time.\n")
+            .append("📊 <b>Progress:</b> ")
+            .append(Math.min(pendingIndex, totalContacts))
+            .append("/")
+            .append(totalContacts);
+
+        List<Button[]> rows = new ArrayList<>();
+        if (isHttpUrl(ad.getClickUrl())) {
+            rows.add(new Button[]{urlButton(labelOrDefault(ad.getButtonName(), "🔗 Open Offer"), ad.getClickUrl())});
+        }
+        if (isHttpUrl(ad.getRewardUrl())) {
+            rows.add(new Button[]{urlButton(labelOrDefault(ad.getRewardButtonName(), "🎁 Claim Reward"), ad.getRewardUrl())});
+        }
+        if (isHttpUrl(ad.getImageUrl())) {
+            rows.add(new Button[]{urlButton("🖼 View Creative", ad.getImageUrl())});
+        }
+        rows.add(new Button[]{callbackButton("⏮ BACK", BotCallbacks.CALL_BACK), callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP)});
+        rows.add(new Button[]{callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)});
+
+        InlineKeyboardMarkup markup = keyboardRows(rows.toArray(new Button[0][]));
+        renderScreen(chatId, state, preferredMessageId, text.toString(), markup, true, true);
     }
 
     private void showAdminMenu(long chatId, UserState state, Integer preferredMessageId, String statusMessage) {
@@ -673,9 +727,19 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                               String text,
                               InlineKeyboardMarkup markup,
                               boolean forceReplace) {
+        renderScreen(chatId, state, preferredMessageId, text, markup, forceReplace, false);
+    }
+
+    private void renderScreen(long chatId,
+                              UserState state,
+                              Integer preferredMessageId,
+                              String text,
+                              InlineKeyboardMarkup markup,
+                              boolean forceReplace,
+                              boolean protectContent) {
         Integer targetMessageId = preferredMessageId != null ? preferredMessageId : state.getLastBotMessageId();
 
-        if (forceReplace && targetMessageId != null) {
+        if ((forceReplace || protectContent) && targetMessageId != null) {
             safeDeleteMessage(chatId, targetMessageId);
             targetMessageId = null;
             state.setLastBotMessageId(null);
@@ -705,6 +769,9 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         sendMessage.setText(text);
         sendMessage.setParseMode("HTML");
         sendMessage.setReplyMarkup(markup);
+        if (protectContent) {
+            sendMessage.setProtectContent(true);
+        }
 
         try {
             Message sent = execute(sendMessage);
@@ -715,34 +782,122 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         }
     }
 
-    private void shiftIndex(UserState state, int delta) {
+    private void handleCallSkip(long chatId, UserState state, Integer preferredMessageId) {
+        clearDialContactMessage(chatId, state);
+
         int total = db.countContacts(state.getUserId());
         if (total <= 0) {
             state.setCurrentIndex(0);
+            state.setPendingAdContactIndex(null);
             db.saveUserState(state);
+            showCallCard(chatId, state, preferredMessageId, null);
             return;
         }
 
-        int next = state.getCurrentIndex() + delta;
-        if (next < 0) {
-            next = 0;
-        }
-        if (next >= total) {
-            next = total - 1;
+        clampIndex(state);
+
+        Integer pendingAdIndex = state.getPendingAdContactIndex();
+        if (pendingAdIndex != null) {
+            if (pendingAdIndex >= total) {
+                state.setPendingAdContactIndex(null);
+                db.saveUserState(state);
+                showCallCard(chatId, state, preferredMessageId, null);
+                return;
+            }
+
+            state.setCurrentIndex(Math.max(0, pendingAdIndex));
+            state.setPendingAdContactIndex(null);
+            db.saveUserState(state);
+            showCallCard(chatId, state, preferredMessageId, null, true);
+            return;
         }
 
-        state.setCurrentIndex(next);
+        int currentIndex = state.getCurrentIndex();
+        if (currentIndex >= total - 1) {
+            return;
+        }
+
+        int nextIndex = currentIndex + 1;
+        state.setCurrentIndex(nextIndex);
+        if (shouldShowAdBeforeContact(nextIndex)) {
+            state.setPendingAdContactIndex(nextIndex);
+        } else {
+            state.setPendingAdContactIndex(null);
+        }
         db.saveUserState(state);
+
+        showCallCard(chatId, state, preferredMessageId, null);
+    }
+
+    private void handleCallBack(long chatId, UserState state, Integer preferredMessageId) {
+        clearDialContactMessage(chatId, state);
+
+        int total = db.countContacts(state.getUserId());
+        if (total <= 0) {
+            state.setCurrentIndex(0);
+            state.setPendingAdContactIndex(null);
+            db.saveUserState(state);
+            showCallCard(chatId, state, preferredMessageId, null);
+            return;
+        }
+
+        clampIndex(state);
+
+        Integer pendingAdIndex = state.getPendingAdContactIndex();
+        if (pendingAdIndex != null) {
+            int previousContactIndex = pendingAdIndex - 1;
+            if (previousContactIndex < 0) {
+                previousContactIndex = 0;
+            }
+
+            state.setCurrentIndex(previousContactIndex);
+            state.setPendingAdContactIndex(null);
+            db.saveUserState(state);
+            showCallCard(chatId, state, preferredMessageId, null, true);
+            return;
+        }
+
+        int currentIndex = state.getCurrentIndex();
+        if (currentIndex <= 0) {
+            return;
+        }
+
+        if (shouldShowAdBeforeContact(currentIndex)) {
+            state.setPendingAdContactIndex(currentIndex);
+            db.saveUserState(state);
+            showCallCard(chatId, state, preferredMessageId, null);
+            return;
+        }
+
+        state.setCurrentIndex(currentIndex - 1);
+        state.setPendingAdContactIndex(null);
+        db.saveUserState(state);
+        showCallCard(chatId, state, preferredMessageId, null);
+    }
+
+    private boolean shouldShowAdBeforeContact(int contactIndex) {
+        int adsEvery = adsgramService.getAdsEveryCards();
+        return adsgramService.isEnabled()
+            && adsEvery > 0
+            && contactIndex > 0
+            && contactIndex % adsEvery == 0;
     }
 
     private void clampIndex(UserState state) {
         int total = db.countContacts(state.getUserId());
         if (total <= 0) {
             state.setCurrentIndex(0);
+            state.setPendingAdContactIndex(null);
         } else if (state.getCurrentIndex() >= total) {
             state.setCurrentIndex(total - 1);
         } else if (state.getCurrentIndex() < 0) {
             state.setCurrentIndex(0);
+        }
+        Integer pendingAdContactIndex = state.getPendingAdContactIndex();
+        if (pendingAdContactIndex != null) {
+            if (pendingAdContactIndex <= 0 || pendingAdContactIndex >= total) {
+                state.setPendingAdContactIndex(null);
+            }
         }
         db.saveUserState(state);
     }
@@ -788,6 +943,23 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             ? "Client"
             : normalized;
         return name.length() > 64 ? name.substring(0, 64) : name;
+    }
+
+    private String labelOrDefault(String value, String fallback) {
+        String normalized = value == null ? "" : value.trim();
+        if (normalized.isEmpty()) {
+            return fallback;
+        }
+        String singleLine = normalized.replace('\n', ' ').replace('\r', ' ');
+        return singleLine.length() > 64 ? singleLine.substring(0, 64) : singleLine;
+    }
+
+    private boolean isHttpUrl(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim().toLowerCase();
+        return normalized.startsWith("https://") || normalized.startsWith("http://");
     }
 
     private void registerUser(org.telegram.telegrambots.meta.api.objects.User user) {

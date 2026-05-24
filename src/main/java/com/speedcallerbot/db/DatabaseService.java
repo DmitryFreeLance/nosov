@@ -54,6 +54,7 @@ public class DatabaseService {
                 CREATE TABLE IF NOT EXISTS user_state (
                     tg_id INTEGER PRIMARY KEY,
                     current_index INTEGER NOT NULL DEFAULT 0,
+                    pending_ad_contact_index INTEGER,
                     last_bot_message_id INTEGER,
                     last_call_contact_message_id INTEGER,
                     mode TEXT NOT NULL DEFAULT 'NONE',
@@ -77,6 +78,7 @@ public class DatabaseService {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_contacts_tg_id ON contacts(tg_id)");
 
             ensureColumnExists(connection, "user_state", "last_call_contact_message_id INTEGER");
+            ensureColumnExists(connection, "user_state", "pending_ad_contact_index INTEGER");
             stmt.executeUpdate("UPDATE contacts SET display_name = 'Client' WHERE display_name IS NULL OR TRIM(display_name) = '' OR LOWER(TRIM(display_name)) = 'no name'");
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to initialize database schema", e);
@@ -127,7 +129,7 @@ public class DatabaseService {
     }
 
     public UserState getUserState(long tgId) {
-        String sql = "SELECT tg_id, current_index, last_bot_message_id, last_call_contact_message_id, mode FROM user_state WHERE tg_id = ?";
+        String sql = "SELECT tg_id, current_index, pending_ad_contact_index, last_bot_message_id, last_call_contact_message_id, mode FROM user_state WHERE tg_id = ?";
         try (Connection connection = openConnection();
              PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setLong(1, tgId);
@@ -140,6 +142,8 @@ public class DatabaseService {
                     } catch (Exception ignored) {
                         mode = UserMode.NONE;
                     }
+                    int rawPendingAdContactIndex = rs.getInt("pending_ad_contact_index");
+                    Integer pendingAdContactIndex = rs.wasNull() ? null : rawPendingAdContactIndex;
                     int rawMessageId = rs.getInt("last_bot_message_id");
                     Integer messageId = rs.wasNull() ? null : rawMessageId;
                     int rawCallContactMessageId = rs.getInt("last_call_contact_message_id");
@@ -147,6 +151,7 @@ public class DatabaseService {
                     return new UserState(
                         rs.getLong("tg_id"),
                         rs.getInt("current_index"),
+                        pendingAdContactIndex,
                         messageId,
                         callContactMessageId,
                         mode
@@ -157,17 +162,18 @@ public class DatabaseService {
             throw new IllegalStateException("Failed to fetch user state", e);
         }
 
-        UserState fallback = new UserState(tgId, 0, null, null, UserMode.NONE);
+        UserState fallback = new UserState(tgId, 0, null, null, null, UserMode.NONE);
         saveUserState(fallback);
         return fallback;
     }
 
     public void saveUserState(UserState state) {
         String sql = """
-            INSERT INTO user_state (tg_id, current_index, last_bot_message_id, last_call_contact_message_id, mode, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO user_state (tg_id, current_index, pending_ad_contact_index, last_bot_message_id, last_call_contact_message_id, mode, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(tg_id) DO UPDATE SET
                 current_index = excluded.current_index,
+                pending_ad_contact_index = excluded.pending_ad_contact_index,
                 last_bot_message_id = excluded.last_bot_message_id,
                 last_call_contact_message_id = excluded.last_call_contact_message_id,
                 mode = excluded.mode,
@@ -178,17 +184,22 @@ public class DatabaseService {
              PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setLong(1, state.getUserId());
             ps.setInt(2, Math.max(0, state.getCurrentIndex()));
-            if (state.getLastBotMessageId() == null) {
+            if (state.getPendingAdContactIndex() == null) {
                 ps.setNull(3, java.sql.Types.INTEGER);
             } else {
-                ps.setInt(3, state.getLastBotMessageId());
+                ps.setInt(3, Math.max(0, state.getPendingAdContactIndex()));
             }
-            if (state.getLastCallContactMessageId() == null) {
+            if (state.getLastBotMessageId() == null) {
                 ps.setNull(4, java.sql.Types.INTEGER);
             } else {
-                ps.setInt(4, state.getLastCallContactMessageId());
+                ps.setInt(4, state.getLastBotMessageId());
             }
-            ps.setString(5, state.getMode().name());
+            if (state.getLastCallContactMessageId() == null) {
+                ps.setNull(5, java.sql.Types.INTEGER);
+            } else {
+                ps.setInt(5, state.getLastCallContactMessageId());
+            }
+            ps.setString(6, state.getMode().name());
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to save user state", e);
