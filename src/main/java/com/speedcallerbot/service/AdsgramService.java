@@ -72,15 +72,26 @@ public class AdsgramService {
     }
 
     public Optional<AdsgramAd> pickBestAd(long tgUserId) {
+        return pickBestAd(tgUserId, null);
+    }
+
+    public Optional<AdsgramAd> pickBestAd(long tgUserId, String userLanguageCode) {
         if (!isEnabled()) {
             return Optional.empty();
         }
 
         List<AdsgramAd> candidates = new ArrayList<>();
+        String language = normalizeLanguageCode(userLanguageCode);
+        if (language == null) {
+            language = normalizeLanguageCode(config.getAdsgramLanguage());
+        }
+        if (language == null) {
+            language = "en";
+        }
 
         for (String blockId : config.getAdsgramBlockIds()) {
             for (int i = 0; i < config.getAdsgramCandidatesPerBlock(); i++) {
-                Optional<AdsgramAd> maybeAd = requestAd(tgUserId, blockId);
+                Optional<AdsgramAd> maybeAd = requestAd(tgUserId, blockId, language);
                 maybeAd.ifPresent(candidates::add);
             }
         }
@@ -93,9 +104,9 @@ public class AdsgramService {
             .max(Comparator.comparingInt(AdsgramAd::getPriorityScore));
     }
 
-    private Optional<AdsgramAd> requestAd(long tgUserId, String blockId) {
+    private Optional<AdsgramAd> requestAd(long tgUserId, String blockId, String language) {
         try {
-            String encodedLanguage = URLEncoder.encode(config.getAdsgramLanguage(), StandardCharsets.UTF_8);
+            String encodedLanguage = URLEncoder.encode(language, StandardCharsets.UTF_8);
             String url = "https://api.adsgram.ai/advbot?tgid=" + tgUserId
                 + "&blockid=" + URLEncoder.encode(blockId, StandardCharsets.UTF_8)
                 + "&language=" + encodedLanguage
@@ -140,6 +151,30 @@ public class AdsgramService {
             log.debug("AdsGram request failed for block {}", blockId, e);
             return Optional.empty();
         }
+    }
+
+    private String normalizeLanguageCode(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String value = raw.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return null;
+        }
+
+        int separatorIndex = value.indexOf('-');
+        if (separatorIndex > 0) {
+            value = value.substring(0, separatorIndex);
+        }
+        separatorIndex = value.indexOf('_');
+        if (separatorIndex > 0) {
+            value = value.substring(0, separatorIndex);
+        }
+
+        if (value.length() < 2) {
+            return null;
+        }
+        return value.substring(0, 2);
     }
 
     private int scoreAd(String textHtml,
