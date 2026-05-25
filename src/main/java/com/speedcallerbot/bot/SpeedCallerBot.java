@@ -20,6 +20,7 @@ import org.telegram.telegrambots.meta.api.methods.GetFile;
 import org.telegram.telegrambots.meta.api.methods.send.SendContact;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
@@ -636,13 +637,14 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         if (isHttpUrl(ad.getClickUrl())) {
             rows.add(new Button[]{urlButton(normalizeAdButtonLabel(ad.getButtonName()), ad.getClickUrl())});
         }
-        if (isHttpUrl(ad.getImageUrl())) {
-            rows.add(new Button[]{urlButton("🖼 View Creative", ad.getImageUrl())});
-        }
         rows.add(new Button[]{callbackButton("⏮ BACK", BotCallbacks.CALL_BACK), callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP)});
         rows.add(new Button[]{callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)});
 
         InlineKeyboardMarkup markup = keyboardRows(rows.toArray(new Button[0][]));
+        if (isHttpUrl(ad.getImageUrl())) {
+            renderPhotoScreen(chatId, state, preferredMessageId, ad.getImageUrl(), text.toString(), markup, true);
+            return;
+        }
         renderScreen(chatId, state, preferredMessageId, text.toString(), markup, true, true);
     }
 
@@ -799,6 +801,40 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             db.saveUserState(state);
         } catch (TelegramApiException e) {
             log.error("Failed to send screen message", e);
+        }
+    }
+
+    private void renderPhotoScreen(long chatId,
+                                   UserState state,
+                                   Integer preferredMessageId,
+                                   String photoUrl,
+                                   String caption,
+                                   InlineKeyboardMarkup markup,
+                                   boolean protectContent) {
+        Integer targetMessageId = preferredMessageId != null ? preferredMessageId : state.getLastBotMessageId();
+        if (targetMessageId != null) {
+            safeDeleteMessage(chatId, targetMessageId);
+            state.setLastBotMessageId(null);
+            db.saveUserState(state);
+        }
+
+        SendPhoto sendPhoto = new SendPhoto();
+        sendPhoto.setChatId(Long.toString(chatId));
+        sendPhoto.setPhoto(new InputFile(photoUrl));
+        sendPhoto.setCaption(trimCaption(caption));
+        sendPhoto.setParseMode("HTML");
+        sendPhoto.setReplyMarkup(markup);
+        if (protectContent) {
+            sendPhoto.setProtectContent(true);
+        }
+
+        try {
+            Message sent = execute(sendPhoto);
+            state.setLastBotMessageId(sent.getMessageId());
+            db.saveUserState(state);
+        } catch (TelegramApiException e) {
+            log.error("Failed to send photo screen message", e);
+            renderScreen(chatId, state, preferredMessageId, caption, markup, true, protectContent);
         }
     }
 
@@ -989,6 +1025,16 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             return "Open Contact";
         }
         return value.length() > 48 ? value.substring(0, 48) : value;
+    }
+
+    private String trimCaption(String value) {
+        if (value == null) {
+            return "";
+        }
+        final int maxCaptionLength = 1024;
+        return value.length() <= maxCaptionLength
+            ? value
+            : value.substring(0, maxCaptionLength - 1) + "…";
     }
 
     private boolean isHttpUrl(String value) {
