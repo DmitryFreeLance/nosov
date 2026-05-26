@@ -587,7 +587,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             .append("📞 <b>Tel:</b> ")
             .append(buildPhoneHtml(contact.getPhone()))
             .append("\n")
-            .append("Tip: tap the number above to open your dialer. If needed, press SEND CONTACT.\n\n")
+            .append("Tip: use SEND CONTACT to open the dialer quickly.\n\n")
             .append("📊 <b>Progress:</b> ")
             .append(currentPosition)
             .append("/")
@@ -1048,14 +1048,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         if (display.isEmpty()) {
             return "—";
         }
-        String hrefPhone = display.replaceAll("[^+\\d]", "");
-        if (hrefPhone.isEmpty()) {
-            return TextFormatter.esc(display);
-        }
-        if (!hrefPhone.startsWith("+") && hrefPhone.matches("\\d+")) {
-            hrefPhone = "+" + hrefPhone;
-        }
-        return "<a href=\"tel:" + hrefPhone + "\">" + TextFormatter.esc(display) + "</a>";
+        return TextFormatter.esc(display);
     }
 
     private String trimCaption(String value) {
