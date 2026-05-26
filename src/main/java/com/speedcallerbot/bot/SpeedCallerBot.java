@@ -22,12 +22,14 @@ import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageMedia;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.Document;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
+import org.telegram.telegrambots.meta.api.objects.media.InputMediaPhoto;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
@@ -581,9 +583,9 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         }
         text
             .append("📞 <b>Tel:</b> ")
-            .append(TextFormatter.esc(contact.getPhone()))
+            .append(buildPhoneHtml(contact.getPhone()))
             .append("\n")
-            .append("Tip: tap the phone button below to open the contact card and call instantly.\n\n")
+            .append("Tip: tap the number above to open your dialer. If needed, press SEND CONTACT.\n\n")
             .append("📊 <b>Progress:</b> ")
             .append(currentPosition)
             .append("/")
@@ -595,9 +597,7 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             text.append("\n\n").append(statusMessage);
         }
 
-        String phoneButton = normalizePhoneButtonLabel(contact.getPhone());
         InlineKeyboardMarkup markup = keyboardRows(
-            new Button[]{callbackButton("📞 " + phoneButton, BotCallbacks.CALL_NOW)},
             new Button[]{callbackButton("📇 SEND CONTACT", BotCallbacks.CALL_NOW)},
             new Button[]{callbackButton("⏮ BACK", BotCallbacks.CALL_BACK), callbackButton("⏭ SKIP", BotCallbacks.CALL_SKIP)},
             new Button[]{callbackButton("🏠 MAIN MENU", BotCallbacks.OPEN_MAIN_MENU)}
@@ -813,9 +813,31 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
                                    boolean protectContent) {
         Integer targetMessageId = preferredMessageId != null ? preferredMessageId : state.getLastBotMessageId();
         if (targetMessageId != null) {
-            safeDeleteMessage(chatId, targetMessageId);
-            state.setLastBotMessageId(null);
-            db.saveUserState(state);
+            EditMessageMedia editMessageMedia = new EditMessageMedia();
+            editMessageMedia.setChatId(Long.toString(chatId));
+            editMessageMedia.setMessageId(targetMessageId);
+
+            InputMediaPhoto media = new InputMediaPhoto();
+            media.setMedia(photoUrl);
+            media.setCaption(trimCaption(caption));
+            media.setParseMode("HTML");
+
+            editMessageMedia.setMedia(media);
+            editMessageMedia.setReplyMarkup(markup);
+
+            try {
+                execute(editMessageMedia);
+                state.setLastBotMessageId(targetMessageId);
+                db.saveUserState(state);
+                return;
+            } catch (TelegramApiException e) {
+                if (isMessageNotModified(e)) {
+                    state.setLastBotMessageId(targetMessageId);
+                    db.saveUserState(state);
+                    return;
+                }
+                log.debug("Unable to edit photo screen {}, fallback to send", targetMessageId, e);
+            }
         }
 
         SendPhoto sendPhoto = new SendPhoto();
@@ -1019,12 +1041,19 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
         return normalized;
     }
 
-    private String normalizePhoneButtonLabel(String rawPhone) {
-        String value = rawPhone == null ? "" : rawPhone.trim();
-        if (value.isEmpty()) {
-            return "Open Contact";
+    private String buildPhoneHtml(String rawPhone) {
+        String display = rawPhone == null ? "" : rawPhone.trim();
+        if (display.isEmpty()) {
+            return "—";
         }
-        return value.length() > 48 ? value.substring(0, 48) : value;
+        String hrefPhone = display.replaceAll("[^+\\d]", "");
+        if (hrefPhone.isEmpty()) {
+            return TextFormatter.esc(display);
+        }
+        if (!hrefPhone.startsWith("+") && hrefPhone.matches("\\d+")) {
+            hrefPhone = "+" + hrefPhone;
+        }
+        return "<a href=\"tel:" + hrefPhone + "\">" + TextFormatter.esc(display) + "</a>";
     }
 
     private String trimCaption(String value) {
