@@ -113,6 +113,8 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
 
         if (message.hasText() && message.getText().startsWith("/start")) {
             state.setMode(UserMode.NONE);
+            state.setPendingAdContactIndex(null);
+            state.setLastBotMessageId(null);
             db.saveUserState(state);
             clearDialContactMessage(chatId, state);
             showMainMenu(chatId, state, null);
