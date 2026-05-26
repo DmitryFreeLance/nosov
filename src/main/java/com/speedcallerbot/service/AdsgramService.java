@@ -128,6 +128,7 @@ public class AdsgramService {
             if (textHtml == null || textHtml.isBlank()) {
                 return Optional.empty();
             }
+            textHtml = stripAnchorTags(textHtml);
 
             String clickUrl = clean(root.path("click_url").asText(null));
             String buttonName = clean(root.path("button_name").asText(null));
@@ -233,5 +234,14 @@ public class AdsgramService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String stripAnchorTags(String html) {
+        if (html == null || html.isBlank()) {
+            return html;
+        }
+        return html
+            .replaceAll("(?is)<a\\b[^>]*>", "")
+            .replaceAll("(?is)</a>", "");
     }
 }
