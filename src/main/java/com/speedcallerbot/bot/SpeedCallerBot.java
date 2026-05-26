@@ -118,7 +118,6 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             db.saveUserState(state);
             clearDialContactMessage(chatId, state);
             showMainMenu(chatId, state, null);
-            safeDeleteMessage(chatId, message.getMessageId());
             return;
         }
 
