@@ -586,13 +586,13 @@ public class SpeedCallerBot extends TelegramLongPollingBot {
             .append("📞 <b>Tel:</b> ")
             .append(buildPhoneHtml(contact.getPhone()))
             .append("\n")
-            .append("Tip: use SEND CONTACT to open the dialer quickly.\n\n")
+            .append("Tip: tap the number to place a call in two taps.\n\n")
             .append("📊 <b>Progress:</b> ")
             .append(currentPosition)
             .append("/")
             .append(total)
             .append("\n\n")
-            .append("Press <b>SEND CONTACT</b> to get a one-tap call card.");
+            .append("Press <b>SEND CONTACT</b> to add this contact to Telegram contacts or your phone book.");
 
         if (statusMessage != null && !statusMessage.isBlank()) {
             text.append("\n\n").append(statusMessage);
